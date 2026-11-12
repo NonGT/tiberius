@@ -218,26 +218,6 @@ where
     /// acknowledging DONE token (with the `DONE_ATTN` status bit set) is
     /// received, per MS-TDS section 2.2.1.6. Returns that DONE token so the
     /// connection is left clean and ready for reuse.
-    /// Reads the rest of the current message, returning the DONE that
-    /// acknowledges an Attention signal if the message held it.
-    pub(crate) async fn flush_done_attention(self) -> crate::Result<Option<TokenDone>> {
-        let mut stream = self.try_unfold();
-
-        loop {
-            match stream.try_next().await? {
-                Some(ReceivedToken::Done(token))
-                | Some(ReceivedToken::DoneProc(token))
-                | Some(ReceivedToken::DoneInProc(token))
-                    if token.is_attention() =>
-                {
-                    return Ok(Some(token));
-                }
-                Some(_) => (),
-                None => return Ok(None),
-            }
-        }
-    }
-
     #[cfg(any(windows, feature = "integrated-auth-gssapi", feature = "sspi-rs"))]
     pub(crate) async fn flush_sspi(self) -> crate::Result<TokenSspi> {
         let mut stream = self.try_unfold();

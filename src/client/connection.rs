@@ -458,16 +458,50 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
         self.flush_sink().await?;
         self.poisoned = false;
 
-        // The server can end the cancelled request's response first and send
-        // the acknowledgement as a message of its own (a batch blocked in
-        // WAITFOR does this). Stopping at the end of the first message would
-        // leave the acknowledgement on the wire, where the next request would
-        // read it as its own response. MS-TDS 2.2.1.7: read up to DONE_ATTN.
-        loop {
-            if let Some(done) = TokenStream::new(self).flush_done_attention().await? {
+        self.read_attention_ack().await
+    }
+
+    /// Reads up to the DONE that acknowledges an Attention (MS-TDS 2.2.1.7).
+    ///
+    /// The cancelled request's response can't be parsed token by token
+    /// here: the reader may have stopped part-way through a token, say a
+    /// big value whose last packet the server was still holding back. Every
+    /// message ends with a DONE token, though, so read whole packets and
+    /// check how each message ends. The server may also end the cancelled
+    /// response first and acknowledge in a message of its own.
+    async fn read_attention_ack(&mut self) -> crate::Result<TokenDone> {
+        let row_bytes = self.context.version().done_row_count_bytes() as usize;
+        let done_len = 5 + row_bytes;
+        let keep_tail = |tail: &mut BytesMut| {
+            if tail.len() > done_len {
+                let _ = tail.split_to(tail.len() - done_len);
+            }
+        };
+        // what's buffered is the unread rest of the current packet
+        let mut tail = self.buf.split();
+        keep_tail(&mut tail);
+        if self.flushed {
+            if let Some(done) = TokenDone::attention_ack(&tail, row_bytes) {
                 return Ok(done);
             }
-            self.flushed = false;
+            tail.clear();
+        }
+        loop {
+            let packet = self.try_next().await?.ok_or_else(|| {
+                crate::Error::Protocol(
+                    "connection closed before the cancel was acknowledged".into(),
+                )
+            })?;
+            let last = packet.is_last();
+            let (_, payload) = packet.into_parts();
+            tail.extend_from_slice(&payload);
+            keep_tail(&mut tail);
+            if last {
+                if let Some(done) = TokenDone::attention_ack(&tail, row_bytes) {
+                    return Ok(done);
+                }
+                tail.clear();
+            }
         }
     }
 
