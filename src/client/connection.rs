@@ -458,7 +458,17 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
         self.flush_sink().await?;
         self.poisoned = false;
 
-        TokenStream::new(self).flush_done_attention().await
+        // The server can end the cancelled request's response first and send
+        // the acknowledgement as a message of its own (a batch blocked in
+        // WAITFOR does this). Stopping at the end of the first message would
+        // leave the acknowledgement on the wire, where the next request would
+        // read it as its own response. MS-TDS 2.2.1.7: read up to DONE_ATTN.
+        loop {
+            if let Some(done) = TokenStream::new(self).flush_done_attention().await? {
+                return Ok(done);
+            }
+            self.flushed = false;
+        }
     }
 
     /// Cleans the packet stream from previous use. It is important to use the

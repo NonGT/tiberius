@@ -218,7 +218,9 @@ where
     /// acknowledging DONE token (with the `DONE_ATTN` status bit set) is
     /// received, per MS-TDS section 2.2.1.6. Returns that DONE token so the
     /// connection is left clean and ready for reuse.
-    pub(crate) async fn flush_done_attention(self) -> crate::Result<TokenDone> {
+    /// Reads the rest of the current message, returning the DONE that
+    /// acknowledges an Attention signal if the message held it.
+    pub(crate) async fn flush_done_attention(self) -> crate::Result<Option<TokenDone>> {
         let mut stream = self.try_unfold();
 
         loop {
@@ -228,14 +230,10 @@ where
                 | Some(ReceivedToken::DoneInProc(token))
                     if token.is_attention() =>
                 {
-                    return Ok(token);
+                    return Ok(Some(token));
                 }
                 Some(_) => (),
-                None => {
-                    return Err(crate::Error::Protocol(
-                        "Never got a DONE token acknowledging the Attention signal.".into(),
-                    ))
-                }
+                None => return Ok(None),
             }
         }
     }
